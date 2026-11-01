@@ -1,0 +1,46 @@
+name: Build DMG & Release
+
+# 推送 v* 标签时:构建 DMG → 创建 GitHub Release 并上传
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # CI 无 GUI,Finder 窗口布局跳过(产物为无布局 DMG,不影响使用)
+      - name: Build DMG
+        run: SKIP_LAYOUT=1 OUT="Codex-Chinese-macOS-${{ github.ref_name }}.dmg" bash build-dmg.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Chinese-macOS-${{ github.ref_name }}-dmg
+          path: Codex-Chinese-macOS-${{ github.ref_name }}.dmg
+          if-no-files-found: error
+
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG="Codex-Chinese-macOS-${{ github.ref_name }}.dmg"
+          gh release create "${{ github.ref_name }}" \
+            "$DMG#Codex中文启动器.dmg" \
+            --title "Codex中文启动器 ${{ github.ref_name }}" \
+            --notes "下载 Codex中文启动器.dmg,打开后将 App 拖入『应用程序』文件夹,双击运行并点『汉化并启动』。
+
+完整说明见 [README](https://github.com/arronfan23/Codex-Chinese-macOS#readme)。
+
+- macOS 13+ / Apple 芯片与 Intel 芯片通用
+- 完全离线,不修改官方原版应用"
