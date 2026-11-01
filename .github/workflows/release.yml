@@ -34,13 +34,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DMG="Codex-Chinese-macOS-${{ github.ref_name }}.dmg"
+          cat > release-notes.md <<'EOF'
+          下载 **Codex中文启动器.dmg**,打开后将 App 拖入『应用程序』文件夹,双击运行并点『汉化并启动』。
+
+          完整说明见 [README](https://github.com/arronfan23/Codex-Chinese-macOS#readme)。
+
+          - macOS 13+ / Apple 芯片与 Intel 芯片通用
+          - 完全离线,不修改官方原版应用
+          EOF
           gh release create "${{ github.ref_name }}" \
-            "$DMG#Codex中文启动器.dmg" \
+            "Codex-Chinese-macOS-${{ github.ref_name }}.dmg#Codex中文启动器.dmg" \
             --title "Codex中文启动器 ${{ github.ref_name }}" \
-            --notes "下载 Codex中文启动器.dmg,打开后将 App 拖入『应用程序』文件夹,双击运行并点『汉化并启动』。
-
-完整说明见 [README](https://github.com/arronfan23/Codex-Chinese-macOS#readme)。
-
-- macOS 13+ / Apple 芯片与 Intel 芯片通用
-- 完全离线,不修改官方原版应用"
+            --notes-file release-notes.md
