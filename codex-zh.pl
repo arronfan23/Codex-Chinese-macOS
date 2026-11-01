@@ -704,7 +704,9 @@ sub rewrite_header_integrity {
 # ----------------------------------------------------------------------------
 sub plist_value {
     my ($plist, $key) = @_;
+    return undef unless -f $plist;
     my $v = capture_cmd(['/usr/bin/plutil', '-extract', $key, 'raw', '-o', '-', $plist]);
+    return undef unless defined $v;
     $v =~ s/\s+$//;
     return $v;
 }
@@ -887,14 +889,30 @@ sub do_install {
     my $report = do_inspect($app, 1);
     fail($report->{reason} || '检测不通过,无法安装。') unless $report->{compatible};
     if (-e $dest) {
-        # 已存在:若是本工具的成品,直接指路;否则要求先清理
+        # 已存在分三种情况:
+        #   1) 有本工具的安装清单 → 已装好,友好指路;
+        #   2) 无清单但结构像 Codex 副本(有 app.asar 且 bundle id 一致)→ 上次安装
+        #      中断留下的半成品残留,自动清理后继续安装(自愈,避免"装也装不了、
+        #      卸也卸不掉"的死锁);
+        #   3) 其他 → 拒绝(防止误删用户自己的同名应用)。
         my $old_manifest = "$dest/Contents/Resources/$MANIFEST_NAME";
         my $m = eval { JSON::PP::decode_json(slurp($old_manifest)) };
         if (!$@ && ref $m && ($m->{language} // '') eq $LANGUAGE) {
             my $when = $m->{installedAt} // '';
             fail "中文版已安装过($when),无需重复安装。\n直接打开使用:$dest\n(首次打开如提示“无法验证/已损坏”:右键点它选“打开”。)\n如需重新安装,请先运行『卸载汉化』删除旧副本。";
         }
-        fail "安装目标必须是不存在的 .app 路径。请先卸载旧副本,或选择新的位置。:$dest";
+        my $leftover_bid = plist_value("$dest/$PLIST_REL", 'CFBundleIdentifier') // '';
+        if (-f "$dest/$ASAR_REL" && $leftover_bid eq $BUNDLE_ID) {
+            info "检测到上次安装中断留下的残留副本,正在自动清理后重新安装……";
+            info "将清理:$dest";
+            require File::Path;
+            File::Path::remove_tree($dest);
+            unlink("$dest/$ASAR_REL$STAGE_SUFFIX");
+            fail "残留副本清理失败,请手动删除后重试:$dest" if -e $dest;
+        }
+        else {
+            fail "安装目标已存在,且不是本工具的安装残留,为避免误删已停止。:$dest\n如确认无需保留,请手动删除该应用后重新运行『汉化并启动』。";
+        }
     }
 
     my $parent = dirname($dest);
@@ -1543,6 +1561,22 @@ EOJS
     _write_plist($srcC, ('a' x 64));
     my $rc2 = eval { do_inspect($srcC, 1); 1 };
     $check->('C 完整性记录不一致被拒', !$rc2);
+
+    # ---------- 场景 D:半成品残留自愈 ----------
+    print "== 场景 D:半成品残留自愈 ==\n";
+    my $destD = "$tmp/D/_dest/Codex 中文版.app";
+    File::Path::make_path("$destD/Contents/Resources");
+    spew_raw("$destD/$ASAR_REL", 'half-done-leftover-not-a-real-asar');
+    _write_plist($destD, undef);
+    my $okD1 = eval { do_install($srcA, $destD); 1 };
+    $check->('D 半成品残留自动清理并重装成功', $okD1, $@);
+    $check->('D 残留已被成品替换(有安装清单)', -f "$destD/Contents/Resources/$MANIFEST_NAME");
+    my $destD2 = "$tmp/D/_dest2/Codex 中文版.app";
+    File::Path::make_path("$destD2/Contents/Resources");
+    spew_raw("$destD2/Contents/Resources/user-file.txt", '非 Codex 内容');
+    _write_plist($destD2, undef);    # bundle id 相同但缺 app.asar → 仍视为用户数据
+    my $okD2 = eval { do_install($srcA, $destD2); 1 };
+    $check->('D 非 Codex 存在目标被拒绝且未被动', !$okD2 && -f "$destD2/Contents/Resources/user-file.txt");
 
     print "== uninstall ==\n";
     my $un = eval { do_uninstall($destA) };
