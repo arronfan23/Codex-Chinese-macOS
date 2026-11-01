@@ -283,7 +283,7 @@ sub _print_progress_bar {
     my @top = (16, 217, 126);
     my @bot = (51, 102, 255);
     my $bar = '';
-    my $fill_ch = '█';    # 源码字节串(UTF-8 3 字节),与横幅同源
+    my $fill_ch = _tty_utf8() ? '█' : '#';    # 非 UTF-8 终端降级为 ASCII
     for my $i (0 .. $width - 1) {
         my $t = $width > 1 ? $i / ($width - 1) : 0;
         if ($i < $fill) {
@@ -325,9 +325,22 @@ my @SMO_ROWS = (
 );
 my $SMO_FILL = '█';    # 源码字节串(UTF-8 3 字节),print 原样输出
 
+# 终端是否为 UTF-8 编码(用于决定方块字符还是 ASCII 降级;
+# 部分 GUI 启动的终端不带 LANG/LC_*,此时按非 UTF-8 处理,避免乱码)
+sub _tty_utf8 {
+    for my $v ($ENV{LC_ALL}, $ENV{LC_CTYPE}, $ENV{LANG}) {
+        next unless defined $v;
+        return 1 if $v =~ /utf-?8/i;
+        return 0 if $v ne '';        # 有 locale 但不含 UTF-8 → 非 UTF-8 终端
+    }
+    return 0;                        # 无任何 locale 信息 → 保守按非 UTF-8
+}
+
 sub smo_banner {
     my ($force) = @_;
     return 0 unless $force || -t STDOUT;    # 默认只在真实终端显示
+    my $utf8  = _tty_utf8();
+    my $fill  = $utf8 ? $SMO_FILL : '#';    # 非 UTF-8 终端降级为 ASCII,防乱码
     my @top = (16, 217, 126);     # #10D97E
     my @bot = (51, 102, 255);     # #3366FF
     my $out = "\n";
@@ -351,9 +364,27 @@ sub smo_banner {
                 elsif ($cell eq 'E') { $line .= sprintf("\e[38;2;%d;%d;%dm", @sh) }
                 $prev = $cell;
             }
-            $line .= $cell eq ' ' ? ' ' : $SMO_FILL;
+            $line .= $cell eq ' ' ? ' ' : $fill;
         }
         $out .= "$line\e[0m\n";
+    }
+    # ---- sanmaocloud 品牌行(UTF-8 终端中文版 / 其他终端 ASCII 版) ----
+    my $GREEN = "\e[38;2;16;217;126m";
+    my $GREY  = "\e[38;2;176;190;200m";
+    my $DIM   = "\e[38;2;96;106;116m";
+    if ($utf8) {
+        my $rule = $DIM . '─' x 36 . "\e[0m";
+        $out .= "  $rule\n";
+        $out .= "   ${GREEN}sanmaocloud · 三猫云\e[0m\n";
+        $out .= "   ${GREY}Codex 中文启动器 —— 完全离线 · 不动原版 · 随时卸载\e[0m\n";
+        $out .= "  $rule\n";
+    }
+    else {
+        my $rule = $DIM . '-' x 36 . "\e[0m";
+        $out .= "  $rule\n";
+        $out .= "   ${GREEN}sanmaocloud\e[0m\n";
+        $out .= "   ${GREY}Codex Chinese Launcher -- offline / no original touched\e[0m\n";
+        $out .= "  $rule\n";
     }
     print $out, "\n";
     return 1;
