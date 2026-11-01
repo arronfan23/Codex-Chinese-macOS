@@ -108,7 +108,7 @@ end quitIfRunning
 on installAndLaunch(toolPath, destQ)
 	tell application "Terminal"
 		activate
-		do script "/usr/bin/perl " & toolPath & " install --destination " & destQ & " && { sleep 1; open " & destQ & "; echo; echo '✓ 安装完成,已启动『Codex 中文版』(首次打开如提示无法验证:右键点它选打开)。本窗口可关闭。'; } || { echo; echo '✗ 安装未完成,请把上方信息截图反馈。原版 Codex 不受影响。本窗口可关闭。'; }; exit"
+		do script "/usr/bin/perl " & toolPath & " install --destination " & destQ & " && { sleep 1; open " & destQ & "; echo; echo '✓ 安装完成,已启动『Codex 中文版』(首次打开如提示无法验证:右键点它选打开)。'; echo; echo '---------------------------------------------'; echo '  觉得好用?欢迎去 GitHub 点个 Star 支持作者:'; echo '  https://github.com/arronfan23/Codex-Chinese-macOS'; echo '---------------------------------------------'; echo '本窗口可关闭。'; } || { echo; echo '✗ 安装未完成,请把上方信息截图反馈。原版 Codex 不受影响。本窗口可关闭。'; }; exit"
 	end tell
 end installAndLaunch
 
@@ -142,12 +142,15 @@ on run
 		end if
 	end if
 
-	set msg to "SMO · Codex 中文启动器" & return & return & "· 自动识别官方 Codex 桌面版(ChatGPT / Codex)" & return & "· 完全离线:不联网、不发送任何数据" & return & "· 不动原版:独立的『Codex 中文版.app』副本" & return & "· 随时可卸载:移入废纸篓即可" & return & return & statusLine
+	set msg to "SMO · Codex 中文启动器" & return & return & "· 自动识别官方 Codex 桌面版(ChatGPT / Codex)" & return & "· 完全离线:不联网、不发送任何数据" & return & "· 不动原版:独立的『Codex 中文版.app』副本" & return & "· 随时可卸载:移入废纸篓即可" & return & return & statusLine & return & return & "⭐ 觉得好用?欢迎去 GitHub 点个 Star 支持作者!(见『使用说明』)"
 	display dialog msg buttons {"使用说明", "卸载汉化", mainBtn} default button mainBtn with icon note
 	set act to button returned of result
 
 	if act is "使用说明" then
-		display dialog "SMO · 使用说明" & return & return & "【安装】点『汉化并启动』,终端出现 SMO 横幅与渐变进度条,走完自动打开中文版(约 1-2 分钟,完全离线)。" & return & return & "【首次打开】若提示『无法验证』或『已损坏』:右键点 app 选“打开”,或到 系统设置 → 隐私与安全性 点“仍要打开”。这是本地签名的正常现象。" & return & return & "【更新】Codex 官方更新后:先『卸载汉化』,再『汉化并启动』。原版与聊天数据不受任何影响。" buttons {"好"} default button "好" with icon note
+		display dialog "SMO · 使用说明" & return & return & "【安装】点『汉化并启动』,终端出现 SMO 横幅与渐变进度条,走完自动打开中文版(约 1-2 分钟,完全离线)。" & return & return & "【首次打开】若提示『无法验证』或『已损坏』:右键点 app 选“打开”,或到 系统设置 → 隐私与安全性 点“仍要打开”。这是本地签名的正常现象。" & return & return & "【更新】Codex 官方更新后:先『卸载汉化』,再『汉化并启动』。原版与聊天数据不受任何影响。" & return & return & "⭐ 觉得好用?点下方按钮去 GitHub 给作者点个 Star,就是对本工具最大的支持!" buttons {"⭐ 点个 Star 支持作者", "好"} default button "好" with icon note
+		if button returned of result is "⭐ 点个 Star 支持作者" then
+			do shell script "open https://github.com/arronfan23/Codex-Chinese-macOS"
+		end if
 	else if act is "卸载汉化" then
 		quitIfRunning()
 		try
