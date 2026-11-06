@@ -1,327 +1,136 @@
-#!/bin/bash
-#
-# build-dmg.sh —— 将 Codex 中文启动器打包为【应用程序 + DMG】
-#
-# 流程:
-#   1. 生成 "Codex中文汉化工具.app"(osacompile 的 AppleScript 应用):
-#      双击弹出图形界面(安装 / 卸载 / 使用说明),实际工作由内置的
-#      codex-zh.pl 在终端窗口执行,进度实时可见;
-#   2. app 经 ad-hoc 本地签名(避免结构未签名问题);
-#   3. 打包为带 Finder 窗口布局的 UDZO DMG(app + 使用说明 + Applications 链接)。
-#
-# 输入(位于本脚本所在目录):
-#   codex-zh.pl         核心工具(打进 app 的 Resources)
-#   使用说明.txt        说明文档
-#
-# 输出:
-#   build/Codex中文启动器.dmg   (可用环境变量 OUT 覆盖;自动补 .dmg 后缀)
-#
-# 环境变量:OUT=...  覆盖输出路径;SKIP_LAYOUT=1  跳过窗口布局
-#
-# 仅使用 macOS 系统自带工具:osacompile、codesign、hdiutil、osascript、ditto。
-#
-set -euo pipefail
+# Codex Chinese for macOS
 
-# --------------------------------------------------------------------------
-# 常量
-# --------------------------------------------------------------------------
-VOLNAME="Codex 中文启动器"
-APP_NAME="Codex中文启动器.app"
-FILE_README="使用说明.txt"
+[![Release](https://img.shields.io/github/v/release/arronfan23/Codex-Chinese-macOS?include_prereleases&logo=github)](https://github.com/arronfan23/Codex-Chinese-macOS/releases)
+[![Build DMG](https://github.com/arronfan23/Codex-Chinese-macOS/actions/workflows/release.yml/badge.svg)](https://github.com/arronfan23/Codex-Chinese-macOS/actions/workflows/release.yml)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-black?logo=apple)](#系统要求)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
-BUILD_DIR="${SCRIPT_DIR}/build"
-STAGING_DIR="${BUILD_DIR}/staging"
-APPLESCRIPT_SRC="${BUILD_DIR}/main.applescript"
+**简体中文**
 
-OUT="${OUT:-}"
-if [ -z "${OUT}" ]; then
-  OUT="${BUILD_DIR}/Codex中文启动器.dmg"
-else
-  case "${OUT}" in
-    /*) ;;
-    *) OUT="$(pwd)/${OUT}" ;;
-  esac
-  case "${OUT}" in
-    *.dmg) ;;
-    *) OUT="${OUT}.dmg" ;;
-  esac
-fi
-SHADOW_FILE="${OUT}.shadow"
-CONVERT_TMP="${OUT}.merge.tmp.dmg"
-LAYOUT_ERR_FILE="${BUILD_DIR}/.layout-error.log"
-MOUNT_POINT="$(/usr/bin/mktemp -d /tmp/codex-zh-dmg-mount.XXXXXX)"
+为 macOS 版 Codex 桌面应用（ChatGPT.app / Codex.app）启用**简体中文界面**的一键式工具，并提供中文版的启动 / 重启入口。
 
-info() { printf '[build-dmg] %s\n' "$*"; }
-warn() { printf '[build-dmg] 警告: %s\n' "$*" >&2; }
-die()  { printf '[build-dmg] 错误: %s\n' "$*" >&2; exit 1; }
+![icon](assets/icon.png)
 
-as_escape() {
-  local s="$1"
-  s=${s//\\/\\\\}
-  s=${s//\"/\\\"}
-  printf '%s' "$s"
-}
+> 官方安装包内本就自带完整的简体中文资源（菜单、界面文案），只是被功能开关锁在英文。
+> 本工具通过本地补丁"解锁"这些官方资源——**不是翻译，而是开关**。
 
-cleanup() {
-  local rc=$?
-  /usr/bin/hdiutil detach "${MOUNT_POINT}" >/dev/null 2>&1 || true
-  /bin/rm -f "${SHADOW_FILE}" "${CONVERT_TMP}" "${LAYOUT_ERR_FILE}" >/dev/null 2>&1 || true
-  exit "${rc}"
-}
-trap cleanup EXIT
+- **完全离线**：全过程不联网、不上传任何数据
+- **不动原版**：不修改"应用程序"里的官方 App，而是生成独立副本 `~/Applications/Codex 中文版.app`，两者可同时安装（但同时运行互斥，见下方说明）
+- **可随时卸载**：副本移入废纸篓即可，不留残余；聊天记录与登录状态不受任何影响（数据与原版共用）
+- **Apple 芯片 / Intel 芯片通用**：工具本身是纯脚本，副本架构自动跟随你机器上的官方原版
 
-detach_mount() {
-  local i=0
-  while [ "${i}" -lt 4 ]; do
-    if /usr/bin/hdiutil detach "${MOUNT_POINT}" >/dev/null 2>&1; then return 0; fi
-    /bin/sleep 2
-    i=$(( i + 1 ))
-  done
-  /usr/bin/hdiutil detach -force "${MOUNT_POINT}" >/dev/null 2>&1
-}
+## 下载安装
 
-# --------------------------------------------------------------------------
-# 1. 校验源文件
-# --------------------------------------------------------------------------
-info "源目录: ${SCRIPT_DIR}"
-[ -f "${SCRIPT_DIR}/codex-zh.pl" ]  || die "缺少核心工具 codex-zh.pl"
-[ -s "${SCRIPT_DIR}/codex-zh.pl" ]  || die "codex-zh.pl 内容为空"
-[ -f "${SCRIPT_DIR}/${FILE_README}" ] || die "缺少 ${FILE_README}"
+从 [**Releases**](https://github.com/arronfan23/Codex-Chinese-macOS/releases) 下载 `Codex中文启动器.dmg`：
 
-# --------------------------------------------------------------------------
-# 2. 生成 AppleScript 应用(.app)
-# --------------------------------------------------------------------------
-/bin/rm -rf "${BUILD_DIR}"
-/bin/mkdir -p "${BUILD_DIR}" "${STAGING_DIR}" "$(dirname "${OUT}")"
+1. 打开 DMG，将 **Codex中文启动器.app** 拖入"应用程序"文件夹
+2. 双击运行，点主按钮 **〔汉化并启动〕**（约 1-2 分钟，离线完成，进度条可见）
+3. 完成后自动打开 **Codex 中文版**，界面即为简体中文
 
-info "生成应用程序:${APP_NAME}"
-cat > "${APPLESCRIPT_SRC}" <<'APPLESCRIPT'
--- 确保中文版副本不在运行(重启/卸载/重装前调用)
--- 宽模式 'Contents':连 Frameworks/Resources 下残留的孤儿 helper 一起清理(不会误伤原版,原版路径不含该子串)
-on quitIfRunning()
-	try
-		do shell script "pkill -f " & quoted form of "Codex 中文版.app/Contents" & " 2>/dev/null; sleep 2; pkill -9 -f " & quoted form of "Codex 中文版.app/Contents" & " 2>/dev/null; sleep 1; true"
-	end try
-end quitIfRunning
+> **首次打开提示"无法验证 / 已损坏"？** 这是因为副本使用本地 ad-hoc 签名（无开发者证书）。
+> 处理：访达中**右键点击 App → 打开**；或到 *系统设置 → 隐私与安全性* 点"仍要打开"。只需一次。
 
--- 原版(/Applications/ChatGPT.app)与中文版同 bundle id,共用同一份用户数据目录。
--- Electron 单实例锁互斥:原版在跑时中文版启动即静默退出(反之亦然)。
--- 所以每次启动中文版前,必须先退出原版。
-on quitOriginalCodex()
-	try
-		do shell script "pkill -f " & quoted form of "ChatGPT.app/Contents" & " 2>/dev/null; sleep 2; pkill -9 -f " & quoted form of "ChatGPT.app/Contents" & " 2>/dev/null; sleep 1; true"
-	end try
-end quitOriginalCodex
+## 使用
 
--- 汉化并启动:终端里跑安装(SMO 横幅 + 渐变进度条),成功后自动打开中文版。
--- 安装前先退出旧中文版(避免对运行中的 bundle 原地重写、装完 open 只切回旧实例);
--- 安装成功后、open 前完整退出原版(Term→2s→KILL→1s,确保单实例锁已释放)。
-on installAndLaunch(toolPath, destQ)
-	tell application "Terminal"
-		activate
-		do script "pkill -f " & quoted form of "Codex 中文版.app/Contents" & " 2>/dev/null; sleep 2; pkill -9 -f " & quoted form of "Codex 中文版.app/Contents" & " 2>/dev/null; sleep 1; /usr/bin/perl " & toolPath & " install --destination " & destQ & " && { pkill -f " & quoted form of "ChatGPT.app/Contents" & " 2>/dev/null; sleep 2; pkill -9 -f " & quoted form of "ChatGPT.app/Contents" & " 2>/dev/null; sleep 1; open " & destQ & "; echo; echo '✓ 安装完成,已启动『Codex 中文版』(首次打开如提示无法验证:右键点它选打开)。'; echo; echo '---------------------------------------------'; echo '  觉得好用?欢迎去 GitHub 点个 Star 支持作者:'; echo '  https://github.com/arronfan23/Codex-Chinese-macOS'; echo '---------------------------------------------'; echo '本窗口可关闭。'; } || { echo; echo '✗ 安装未完成,请把上方信息截图反馈。原版 Codex 不受影响。本窗口可关闭。'; }; exit"
-	end tell
-end installAndLaunch
+主按钮会根据当前状态自动切换：
 
-on run
-	set myRes to POSIX path of (path to me) & "Contents/Resources/"
-	set toolPath to quoted form of (myRes & "codex-zh.pl")
-	set homeApp to (POSIX path of (path to home folder)) & "Applications/"
-	set destApp to homeApp & "Codex 中文版.app"
-	set destQ to quoted form of destApp
+| 状态 | 主按钮 | 行为 |
+|---|---|---|
+| 未安装 | **汉化并启动** | 打补丁 + 自动启动，带进度条 |
+| 已安装 | **启动中文版** | 直接启动 |
+| 正在运行 | **重启中文版** | 结束旧实例并重新启动 |
 
-	-- 状态探测:是否已安装 / 中文版是否在运行 / 原版是否在运行
-	-- 进程探测用窄模式只看主进程(Contents/MacOS/),避免孤儿 helper 造成误报
-	set probe to do shell script "if [ -f " & destQ & "/Contents/Resources/codex-zh-install.json ]; then echo INSTALLED; else echo MISSING; fi; if pgrep -f " & quoted form of "Codex 中文版.app/Contents/MacOS/" & " >/dev/null 2>&1; then echo RUNNING; else echo STOPPED; fi; if pgrep -f " & quoted form of "/Applications/ChatGPT.app/Contents/MacOS/" & " >/dev/null 2>&1; then echo ORIG_RUNNING; else echo ORIG_IDLE; fi"
-	set installState to paragraph 1 of probe
-	set runState to paragraph 2 of probe
-	set origState to paragraph 3 of probe
+另有〔卸载汉化〕（移入废纸篓）与〔使用说明〕。
 
-	set mainBtn to "汉化并启动"
-	if installState is "INSTALLED" then
-		if runState is "RUNNING" then
-			set mainBtn to "重启中文版"
-		else
-			set mainBtn to "启动中文版"
-		end if
-	end if
+> **⚠️ 原版与中文版不能同时运行。** 两者内部标识相同、共用同一份用户数据（登录状态、聊天记录），
+> Electron 单实例锁决定任一时刻只有一方能运行——同时打开时后启动的一方会静默退出，表现为"点了没反应"。
+> v1.1.0 起启动器会自动处理：**启动中文版前先退出原版**，并在窗口中提示"检测到原版正在运行"。
+> 想用回原版：先退出中文版，再打开原版即可。
 
-	set statusLine to "尚未安装 —— 点『汉化并启动』开始,完成后自动打开中文版。"
-	if installState is "INSTALLED" then
-		if runState is "RUNNING" then
-			set statusLine to "中文版已安装且正在运行。"
-		else
-			set statusLine to "中文版已安装,点『启动中文版』即可使用。"
-		end if
-	end if
-	if origState is "ORIG_RUNNING" and runState is not "RUNNING" then
-		set statusLine to statusLine & return & return & "⚠️ 检测到原版 Codex 正在运行:两者不能同时开,启动中文版时会自动先退出原版。"
-	end if
+### 命令行
 
-	set msg to "SMO · Codex 中文启动器" & return & return & "· 自动识别官方 Codex 桌面版(ChatGPT / Codex)" & return & "· 完全离线:不联网、不发送任何数据" & return & "· 不动原版:独立的『Codex 中文版.app』副本" & return & "· 随时可卸载:移入废纸篓即可" & return & return & statusLine & return & return & "⭐ 觉得好用?欢迎去 GitHub 点个 Star 支持作者!(见『使用说明』)"
-	display dialog msg buttons {"使用说明", "卸载汉化", mainBtn} default button mainBtn with icon note
-	set act to button returned of result
+```bash
+# 检测官方应用与补丁兼容性
+/usr/bin/perl codex-zh.pl inspect [--json]
 
-	if act is "使用说明" then
-		display dialog "SMO · 使用说明" & return & return & "【安装】点『汉化并启动』,终端出现 SMO 横幅与渐变进度条,走完自动打开中文版(约 1-2 分钟,完全离线)。" & return & return & "【首次打开】若提示『无法验证』或『已损坏』:右键点 app 选“打开”,或到 系统设置 → 隐私与安全性 点“仍要打开”。这是本地签名的正常现象。" & return & return & "【更新】Codex 官方更新后:先『卸载汉化』,再『汉化并启动』。原版与聊天数据不受任何影响。" & return & return & "【互斥说明】原版与中文版共用同一份数据,不能同时运行:启动中文版会自动退出原版;想用回原版,先退出中文版再打开原版即可。" & return & return & "⭐ 觉得好用?点下方按钮去 GitHub 给作者点个 Star,就是对本工具最大的支持!" buttons {"⭐ 点个 Star 支持作者", "好"} default button "好" with icon note
-		if button returned of result is "⭐ 点个 Star 支持作者" then
-			do shell script "open https://github.com/arronfan23/Codex-Chinese-macOS"
-		end if
-	else if act is "卸载汉化" then
-		quitIfRunning()
-		try
-			do shell script "/usr/bin/perl " & toolPath & " uninstall --app " & destQ & " 2>&1"
-			display dialog "SMO · 已卸载" & return & return & "『Codex 中文版』已移入废纸篓(可找回)。" & return & "原版 Codex 与聊天数据均未受影响。" buttons {"好"} default button "好" with icon note
-		on error errMsg
-			display dialog "SMO · 卸载未完成" & return & return & errMsg buttons {"好"} default button "好" with icon stop
-		end try
-	else if act is "汉化并启动" then
-		installAndLaunch(toolPath, destQ)
-	else if act is "启动中文版" then
-		quitOriginalCodex()
-		do shell script "open " & destQ
-	else if act is "重启中文版" then
-		quitIfRunning()
-		quitOriginalCodex()
-		do shell script "open " & destQ
-	end if
-end run
-APPLESCRIPT
+# 安装（自动发现 ChatGPT.app / Codex.app，也可 --app 指定）
+/usr/bin/perl codex-zh.pl install [--destination ~/Applications/Codex\ 中文版.app]
 
-/usr/bin/osacompile -o "${STAGING_DIR}/${APP_NAME}" "${APPLESCRIPT_SRC}" || die "osacompile 生成应用失败"
-/bin/mkdir -p "${STAGING_DIR}/${APP_NAME}/Contents/Resources"
-/usr/bin/ditto "${SCRIPT_DIR}/codex-zh.pl" "${STAGING_DIR}/${APP_NAME}/Contents/Resources/codex-zh.pl"
+# 卸载（校验安装清单与完整性后经 Finder 移入废纸篓）
+/usr/bin/perl codex-zh.pl uninstall --app ~/Applications/Codex\ 中文版.app
 
-# 应用图标:白色圆形底 + 猫头(整体圆形,圆外透明)(用户提供源图,抠底 + 泛洪分割 + 连通域清理);
-# 源图缺失时回退到程序生成的绿色 Codex 风格六瓣花
-ICONSET_DIR="${BUILD_DIR}/app-icon.iconset"
-ICON_SRC_PNG="${BUILD_DIR}/logo-source.png"
-MAKE_ICON_OK=0
-if command -v node >/dev/null 2>&1; then
-  if [ -f "${SCRIPT_DIR}/logo-source.jpg" ] \
-     && /usr/bin/sips -s format png "${SCRIPT_DIR}/logo-source.jpg" --out "${ICON_SRC_PNG}" >/dev/null 2>&1 \
-     && node "${SCRIPT_DIR}/make-icon.js" "${ICON_SRC_PNG}" "${ICONSET_DIR}" >/dev/null 2>&1; then
-    MAKE_ICON_OK=1
-    info "生成应用图标(按用户源图 1:1 还原)……"
-  elif [ -f "${SCRIPT_DIR}/gen-logo.js" ]; then
-    info "未找到源图,生成备用图标(绿色 Codex 风格)……"
-    node "${SCRIPT_DIR}/gen-logo.js" "${ICONSET_DIR}" >/dev/null 2>&1 && MAKE_ICON_OK=1
-  fi
-  if [ "${MAKE_ICON_OK}" = "1" ] \
-     && /usr/bin/iconutil -c icns -o "${STAGING_DIR}/${APP_NAME}/Contents/Resources/applet.icns" "${ICONSET_DIR}" 2>/dev/null; then
-    # 关键:osacompile 生成的 Info.plist 带 CFBundleIconName + Assets.car(资产目录),
-    # macOS 11+ 优先读资产目录而非 applet.icns,导致自定义 icns 被无视。
-    # 移除 IconName 与 Assets.car,强制走 CFBundleIconFile → applet.icns。
-    PLIST="${STAGING_DIR}/${APP_NAME}/Contents/Info.plist"
-    /usr/bin/plutil -remove CFBundleIconName "${PLIST}" >/dev/null 2>&1 || true
-    /bin/rm -f "${STAGING_DIR}/${APP_NAME}/Contents/Resources/Assets.car"
-    info "应用图标已生成。"
-  else
-    warn "图标生成失败,使用默认 applet 图标(不影响功能)"
-  fi
-else
-  warn "未找到 node,跳过自定义图标(不影响功能)"
-fi
+# 自测（57 项断言，覆盖补丁 / asar 完整性 / Mach-O 处理 / 异常防御）
+/usr/bin/perl codex-zh.pl selftest
+```
 
-info "为应用生成本地签名(ad-hoc,无需联网)……"
-if /usr/bin/codesign --force --sign - --timestamp=none "${STAGING_DIR}/${APP_NAME}" 1>/dev/null 2>&1; then
-  info "应用本地签名完成。"
-else
-  warn "应用本地签名失败(不影响功能,首次打开需右键→打开)"
-fi
+依赖仅为 macOS 系统自带组件：perl（Digest::SHA / JSON::PP）、plutil、codesign、ditto、osascript。
 
-/usr/bin/ditto "${SCRIPT_DIR}/${FILE_README}" "${STAGING_DIR}/${FILE_README}"
-/bin/ln -sfn /Applications "${STAGING_DIR}/Applications"
+## 工作原理
 
-[ -d "${STAGING_DIR}/${APP_NAME}" ] || die "应用生成失败"
-[ -e "${STAGING_DIR}/${FILE_README}" ] || die "staging 缺少 ${FILE_README}"
-[ -L "${STAGING_DIR}/Applications" ] || die "staging 缺少 Applications 链接"
+对官方 App 的**独立副本**做以下处理（原版永不修改）：
 
-# --------------------------------------------------------------------------
-# 3. 生成 UDZO 镜像
-# --------------------------------------------------------------------------
-info "创建 DMG(UDZO): ${OUT}   卷名: ${VOLNAME}"
-/usr/bin/hdiutil create \
-  -volname "${VOLNAME}" \
-  -srcfolder "${STAGING_DIR}" \
-  -ov \
-  -format UDZO \
-  -fs HFS+ \
-  "${OUT}" >/dev/null
-[ -f "${OUT}" ] || die "hdiutil create 未生成 ${OUT}"
+1. **解锁语言开关**：在 `app.asar` 内的 JS 中做三处**等长**字节替换
+   - `x?.get(\`enable_i18n\`, !1)` → `!0`（打开 i18n 功能开关）
+   - 界面/生效语言的消费点 → 替换为 `"zh-CN"` 字面量（空格填充保持等长）
+2. **同步完整性链**（等长替换保证 asar 偏移不变，可原位更新）：
+   - 重算补丁文件的 SHA256 与 4 MiB 分块哈希，在 asar header 原位更新
+   - 同步 `Info.plist` 的 `ElectronAsarIntegrity`
+3. **处理厂商定制校验**：OpenAI 定制版将 asar 哈希内嵌于 Codex Framework 的
+   `__DATA_CONST,__asar_integrity` 节；本工具清零该节以跳过这项校验（实测清零即跳过）
+4. **本地 ad-hoc 重签**：嵌套 bundle 深者先签、**不带 entitlements**
+   （原版 entitlements 含需开发者证书的受限条目，ad-hoc 携带会被 AMFI 内核击杀）
+5. 清除 quarantine 属性，写安装清单 `codex-zh-install.json`（卸载前校验）
 
-# --------------------------------------------------------------------------
-# 4. 挂载 → Finder 窗口布局 → 卸载 → 合并布局数据
-#    注:macOS 26 (Darwin 25) 的 Finder 已不接受 toolbar/statusbar 属性与
-#    "item of window" 的 position / close window 写法(-10006/-1708),
-#    故改用 "position of item of 卷对象",并省略 close(卸载后窗口自然消失)。
-# --------------------------------------------------------------------------
-if [ "${SKIP_LAYOUT:-0}" = "1" ]; then
-  warn "SKIP_LAYOUT=1,跳过 Finder 窗口布局设置(产物为无布局 DMG)"
-else
-  info "临时挂载(影子写入模式): ${MOUNT_POINT}"
-  if ! /usr/bin/hdiutil attach "${OUT}" -mountpoint "${MOUNT_POINT}" -shadow "${SHADOW_FILE}" -noverify >/dev/null; then
-    die "hdiutil attach 挂载失败: ${OUT}"
-  fi
-  AS_MOUNT="$(as_escape "${MOUNT_POINT}")"
-  AS_DISK="$(as_escape "${MOUNT_POINT##*/}")"
-  AS_APP="$(as_escape "${APP_NAME}")"
-  AS_README="$(as_escape "${FILE_README}")"
-  if /usr/bin/osascript 2>"${LAYOUT_ERR_FILE}" <<APPLESCRIPT
-tell application "Finder"
-	set srcVol to (POSIX file "${AS_MOUNT}") as alias
-	activate
-	open srcVol
-	delay 1
-	set theWindow to container window of srcVol
-	set current view of theWindow to icon view
-	set bounds of theWindow to {140, 140, 760, 480}
-	set theOptions to the icon view options of theWindow
-	set arrangement of theOptions to not arranged
-	set icon size of theOptions to 128
-	set position of item "${AS_APP}" of srcVol to {120, 130}
-	set position of item "${AS_README}" of srcVol to {330, 270}
-	set position of item "Applications" of srcVol to {500, 130}
-	update srcVol without registering applications
-	delay 1
-	return "layout-ok"
-end tell
-APPLESCRIPT
-  then
-    info "Finder 窗口布局设置完成(左:应用;右:Applications 拖放链接;下:说明)"
-  else
-    warn "AppleScript 设置窗口布局失败,产物降级为无布局 DMG(不影响使用)"
-    [ -s "${LAYOUT_ERR_FILE}" ] && /bin/cat "${LAYOUT_ERR_FILE}" >&2 || true
-  fi
-  /bin/sleep 1
-  info "卸载临时挂载点 ${MOUNT_POINT}"
-  detach_mount || die "卸载 ${MOUNT_POINT} 失败"
-  if [ -f "${SHADOW_FILE}" ]; then
-    info "合并窗口布局数据 (.DS_Store) 并重打包为 UDZO"
-    /usr/bin/hdiutil convert "${OUT}" -shadow "${SHADOW_FILE}" -format UDZO -ov -o "${CONVERT_TMP}" >/dev/null
-    [ -f "${CONVERT_TMP}" ] || die "hdiutil convert 合并影子文件失败"
-    /bin/mv -f "${CONVERT_TMP}" "${OUT}"
-    /bin/rm -f "${SHADOW_FILE}"
-  fi
-fi
+## 系统要求
 
-# --------------------------------------------------------------------------
-# 5. 校验与摘要
-# --------------------------------------------------------------------------
-if /usr/bin/hdiutil verify "${OUT}" >/dev/null 2>&1; then
-  info "hdiutil verify: 通过"
-else
-  die "hdiutil verify 未通过,镜像可能已损坏:${OUT}"
-fi
+- macOS 13 (Ventura) 或更高
+- Apple 芯片（M 系列）或 Intel 芯片
+- 已安装官方 Codex 桌面版（App 名为 ChatGPT.app 或 Codex.app 均可，自动识别）
 
-info "DMG 生成完成: ${OUT}"
-printf '%s\n' '---- hdiutil imageinfo 摘要 ----'
-summary="$(/usr/bin/hdiutil imageinfo "${OUT}" 2>/dev/null \
-  | /usr/bin/grep -E '^(Format:|Total Bytes:|Compressed Bytes:|partition-name:|Checksum Type:)' || true)"
-if [ -n "${summary}" ]; then
-  printf '%s\n' "${summary}"
-else
-  /usr/bin/hdiutil imageinfo "${OUT}" || true
-fi
-printf '%s\n' '--------------------------------'
+## 常见问题
+
+<details>
+<summary><b>Codex 官方更新后还能用吗？</b></summary>
+
+官方更新可能改变语言相关代码的位置或形态，导致补丁不兼容。请先〔卸载汉化〕，
+等待本仓库发布适配版本后再重新安装。原版不受任何影响。
+</details>
+
+<details>
+<summary><b>装好中文版后，能删掉原来的 ChatGPT.app 吗？</b></summary>
+
+技术上可以（聊天数据存于 <code>~/Library/Application Support/Codex</code>，不在任何 App 里），
+但<b>建议保留</b>：官方更新后需要用新版原版重新汉化；原版也是出问题时的现成回退方案。
+</details>
+
+<details>
+<summary><b>提示"未找到 Codex 桌面版"？</b></summary>
+
+确认已安装官方桌面版（ChatGPT.app 或 Codex.app）。特殊位置可用
+<code>--app /实际路径/XX.app</code> 指定，详见上文命令行一节。
+</details>
+
+## 从源码构建
+
+```bash
+git clone https://github.com/arronfan23/Codex-Chinese-macOS.git
+cd Codex-Chinese-macOS
+bash build-dmg.sh        # 产物: build/Codex中文启动器.dmg
+```
+
+要求：macOS 自带的 osacompile / iconutil / hdiutil，以及 node（生成应用图标）。
+推送 `v*` 标签时，GitHub Actions 会自动构建 DMG 并发布到 Releases。
+
+## 相关项目
+
+- **Windows 版**：[arronfan23/Codex-Chinese](https://github.com/arronfan23/Codex-Chinese)
+
+## 免责声明
+
+本项目并非 OpenAI 官方产品，与 OpenAI 无任何关系；"Codex"及相关商标归其权利人所有。
+本项目仅供个人学习与研究使用，请遵守当地法律法规及软件许可协议。
+使用本项目产生的一切后果由使用者自行承担。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 arronfan23
