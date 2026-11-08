@@ -47,6 +47,11 @@ my $RE_FLAG_ON  = qr/\b[A-Za-z_\$][A-Za-z0-9_\$]*\?\.get\(\x60enable_i18n\x60,!0
 my $RE_LOCALE   = qr/\b([A-Za-z_\$][A-Za-z0-9_\$]*)\(([A-Za-z_\$][A-Za-z0-9_\$]*)\.localeOverride\)/;
 my $RE_EFFECT   = qr/\b([A-Za-z_\$][A-Za-z0-9_\$.]*)\.getEffective\(([A-Za-z_\$][A-Za-z0-9_\$.]*)\.localeOverride\.key\)/;
 
+# 新版(26.1103+)前端开关补丁正则:打包器改用双引号;开关可能以 JSON/JS 对象
+# 键值形态存在("enable_i18n": false)。两类形态均做等长替换,多层防御。
+my $RE_FLAG_OFF_DQ = qr/\b[A-Za-z_\$][A-Za-z0-9_\$]*\?\.get\("enable_i18n",!1\)/;
+my $RE_KV_FALSE    = qr/(['"])enable_i18n\1(\s*:\s*)false\b/;
+
 # asar 内的补丁目标文件(路径前缀;覆盖新旧两代布局)
 #   旧版主进程:.vite/build/main*;新版(如 26.x):.vite/build/early-bootstrap*
 #   旧版 webview 初始化:app-initial-*;新版 i18n 开关/语言消费:
@@ -430,6 +435,17 @@ sub patch_js {
         substr($m, -2, 1) = '0';
         $m /ge);
 
+    # R1v(26.1103+):双引号形态,同 R1 机制改默认值 !1 → !0
+    $st{flag} += ($content =~ s/($RE_FLAG_OFF_DQ)/
+        my $m = $1;
+        fail "语言补丁不符合等长规则" unless substr($m, -2, 1) eq '1';
+        substr($m, -2, 1) = '0';
+        $m /ge);
+
+    # R1j(26.1103+):JSON/JS 键值形态 "enable_i18n": false → true(等长:false→true+空格)
+    # 注:不额外包裹捕获组——qr 内含 \1 反向引用,外层再包组会使组号偏移导致失配
+    $st{flag} += ($content =~ s/$RE_KV_FALSE/$1 . 'enable_i18n' . $1 . $2 . 'true '/ge);
+
     # R3 整表达式替换:先于 R2(两者目标不重叠,顺序仅作保险)
     $st{effective} = ($content =~ s/($RE_EFFECT)(?![.(\[=`])/
         _zh_literal_pad(length($1)) /ge);
@@ -559,13 +575,27 @@ sub hash_entry_streaming {
 
 sub target_paths {
     my ($self) = @_;
-    my @out;
+    return @{$self->{__target_cache}} if $self->{__target_cache};
+    my %out;
     for my $p (sort keys %{$self->{files}}) {
         for my $pre (@main::PATCH_TARGETS) {
-            if (index($p, $pre) == 0) { push @out, $p; last; }
+            if (index($p, $pre) == 0) { $out{$p} = 1; last; }
         }
     }
-    return @out;
+    # 内容级目标(26.1103+):webview 改为数字命名 chunk(webview/assets/async/<id>.<hash>.js),
+    # 文件名前缀不再可识别 → 按内容含 enable_i18n 键识别开关载体,纳入补丁目标。
+    for my $p (sort keys %{$self->{files}}) {
+        next if $out{$p};
+        next unless $p =~ m{^webview/assets/.*\.(?:js|mjs|json)$};
+        my $e = $self->{files}{$p};
+        next if $e->{unpacked} || !defined $e->{offset};
+        next if $e->{size} > $main::ZH_EVIDENCE_MAX_BYTES;
+        my $c = eval { $self->read_file_bytes($p) };
+        next if $@ || !defined $c;
+        $out{$p} = 1 if index($c, 'enable_i18n') >= 0;
+    }
+    $self->{__target_cache} = [sort keys %out];
+    return @{$self->{__target_cache}};
 }
 
 sub locale_file_count {
@@ -871,7 +901,8 @@ sub do_inspect {
         }
     }
 
-    # 补丁点检测
+    # 补丁点检测(含 26.1103+ 双引号/键值形态;already 判定仅认旧版反引号
+    # ON 形态,避免新版原版自带的默认 !0 被误判为"已启用中文")
     my ($already, $hits, @will_patch) = (0, 0);
     for my $p ($asar->target_paths()) {
         my $e = $asar->{files}{$p};
@@ -886,12 +917,14 @@ sub do_inspect {
             next if $@;
         }
         my $f  = () = ($c =~ /$RE_FLAG_OFF/g);
+        my $f2 = () = ($c =~ /$RE_FLAG_OFF_DQ/g);
+        my $fj = () = ($c =~ /$RE_KV_FALSE/g);
         my $l  = () = ($c =~ /$RE_LOCALE/g);
         my $e2 = () = ($c =~ /$RE_EFFECT/g);
         my $on = () = ($c =~ /$RE_FLAG_ON/g);
-        $hits += $f + $l + $e2;
+        $hits += $f + $f2 + $fj + $l + $e2;
         $already = 1 if $on && !$f;
-        push @will_patch, $p if $f || $l || $e2;
+        push @will_patch, $p if $f || $f2 || $fj || $l || $e2;
     }
     if ($hits == 0 && !$already) {
         $compat = 0;
