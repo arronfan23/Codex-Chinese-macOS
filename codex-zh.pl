@@ -59,8 +59,14 @@ our @PATCH_TARGETS = (
     'webview/assets/general-settings',
 );
 # locale 资源存在性检查
+#   老版布局:语言包按语言命名(webview/assets/zh-CN-*.js)
+#   新版布局(26.1103+):语言包改为数字 ID 的异步 chunk(webview/assets/async/<id>.<hash>.js),
+#   文件名不再含语言代码 → 增加内容级证据检测(在 webview 资源子树里找中文界面文案)
 our $LOCALE_MARKER_FILE   = 'native-menu-locales/zh-CN.json';
 our $LOCALE_MARKER_PREFIX = 'webview/assets/zh-CN-';
+our @ZH_EVIDENCE_WORDS = ('新建任务', '拉取请求', '已安排');  # 中文界面文案证据词(新旧版本均含)
+our $ZH_EVIDENCE_DIR   = 'webview/assets/';                    # 内容检测只扫该子树
+our $ZH_EVIDENCE_MAX_BYTES = 6 * 1024 * 1024;                  # 单文件上限,跳过超大 chunk
 
 my $ASAR_REL  = 'Contents/Resources/app.asar';
 my $PLIST_REL = 'Contents/Info.plist';
@@ -571,10 +577,33 @@ sub locale_file_count {
     return $n;
 }
 
+# 内容级证据:在 webview 资源子树里找含中文界面文案的 js/json(适配新版
+# 语言包按数字 ID 命名、文件名不带语言代码的布局)。返回首个命中的路径。
+sub zh_evidence_file {
+    my ($self) = @_;
+    for my $p (sort keys %{$self->{files}}) {
+        next unless index($p, $main::ZH_EVIDENCE_DIR) == 0;
+        next unless $p =~ /\.(?:js|mjs|json)$/;
+        my $e = $self->{files}{$p};
+        next if $e->{unpacked} || !defined $e->{offset};
+        next if $e->{size} > $main::ZH_EVIDENCE_MAX_BYTES;
+        my $c = eval { $self->read_file_bytes($p) };
+        next if $@ || !defined $c;
+        for my $w (@main::ZH_EVIDENCE_WORDS) {
+            return $p if index($c, $w) >= 0;
+        }
+    }
+    return undef;
+}
+
 sub has_locale_resources {
     my ($self) = @_;
-    return (exists $self->{files}{$main::LOCALE_MARKER_FILE}
-         && grep { index($_, $main::LOCALE_MARKER_PREFIX) == 0 } keys %{$self->{files}}) ? 1 : 0;
+    # 老布局:菜单 json + 按语言命名的 webview 语言包
+    return 1 if exists $self->{files}{$main::LOCALE_MARKER_FILE}
+         && grep { index($_, $main::LOCALE_MARKER_PREFIX) == 0 } keys %{$self->{files}};
+    # 新布局:文件名证据缺失时,内容级检测兜底(菜单 json 仍必须存在)
+    return 0 unless exists $self->{files}{$main::LOCALE_MARKER_FILE};
+    return defined($self->zh_evidence_file()) ? 1 : 0;
 }
 
 sub header_hash { my ($s) = @_; return Digest::SHA::sha256_hex($s->{header_raw}); }
@@ -812,6 +841,11 @@ sub do_inspect {
         localeFileCount => $asar->locale_file_count(),
         sourceHeaderHash => $src_hash,
     );
+    # 新布局下 webview 文件名证据缺失时,记录内容级证据文件(若存在)便于排查
+    if (!grep { index($_, $main::LOCALE_MARKER_PREFIX) == 0 } keys %{$asar->{files}}) {
+        my $ev = $asar->zh_evidence_file();
+        $report{zhEvidenceFile} = $ev if defined $ev;
+    }
 
     my ($compat, $why) = (1, '');
     if (!$asar->has_locale_resources()) {
@@ -872,7 +906,7 @@ sub do_inspect {
     unless ($quiet) {
         info "应用:$app";
         info "版本:$ver";
-        info "中文资源文件:$report{localeFileCount} 个";
+        info "中文资源文件:$report{localeFileCount} 个" . ($report{zhEvidenceFile} ? "(内容级证据:$report{zhEvidenceFile})" : "");
         info "需调整的文件:" . (@will_patch ? join(', ', @will_patch) : '(无)');
         info "已启用中文:" . ($already ? '是' : '否');
         info "检测完成:" . ($compat ? '可创建中文版应用。' : "无法汉化 —— $why");
